@@ -1,0 +1,9 @@
+.env
+data/cache/
+*.xlsx
+*.csv
+*.parquet
+*.pkl
+outputs/
+__pycache__/
+*.pyc

@@ -1,0 +1,8 @@
+dash==4.2.0
+plotly==6.7.0
+pandas==3.0.0
+sqlalchemy==2.0.46
+psycopg2-binary==2.9.11
+python-dotenv==1.2.1
+fastapi==0.115.12
+uvicorn[standard]==0.34.3

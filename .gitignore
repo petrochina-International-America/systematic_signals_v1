@@ -1,0 +1,31 @@
+/Systematic_Energy_Trading-main/
+
+# --- 2026-07-15 closeout hygiene ---
+__pycache__/
+*.pyc
+backup/
+alt_data/
+*.pkl
+/*.pdf
+report_artifacts/
+/node_modules/
+node_modules/
+dist/
+
+# --- 2026-07-20 production cut: track only energy/ (brain) + systematic-trading/ (dashboard) ---
+/audit_artifacts/
+/closeout_2026_07_15/
+/dashboard_changes_smoke/
+/docs/
+/dollar_band_test/
+/notes/
+/pass8_signal_integrity/
+/pass9_direction_check/
+/rederivation/
+/scalein_ladder/
+/tests/
+/energy_library_audit.md
+/spread_pnl_fix_results.md
+/stat_arb_latest.ipynb
+/verify_momentum.js
+/verify_momentum.mjs
