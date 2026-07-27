@@ -23,7 +23,11 @@ _top_alltime_cache: tuple[float, list] = (0.0, [])
 def precompute():
     """Warm all signal caches. Call after loader.warm_up()."""
     signal_snapshot()
-    spread_snapshot()
+    # Explicit None: the params are FastAPI Query() defaults, so a bare call
+    # passes Query objects into the engine (they are not None, so each pair's
+    # calibrated lookback/threshold gets overridden with a Query instance) and
+    # caches the result under a key no real request can ever hit.
+    spread_snapshot(lookback=None, threshold=None)
     _compute_top_performers()
 
 

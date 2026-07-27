@@ -213,6 +213,67 @@ caching behavior.
 
 ---
 
+---
+
+## Publishing to FlowsDB (added 2026-07-23)
+
+Until now nothing was persisted — every number was computed in-process and
+served over HTTP. `data/publish.py` adds a write path so the shared work
+dashboard can read the Signals and Levels tabs out of FlowsDB instead of
+calling this app.
+
+### Where it sits in the pipeline
+
+```
+Bloomberg ──► prices_daily ──► compute signals ──► systematic.* ──┬─► dashboard
+              (other repo)     (data.publish)      (same FlowsDB)  └─► us_db_dev
+```
+
+Compute sits **between** the price load and the replication fan-out. Anywhere
+else and the shared DB serves signals derived from an older price pull than the
+prices sitting next to them — which nothing would flag.
+
+Three rules the scheduler has to honour:
+
+1. **Trigger on the price load finishing, not on a clock.** `as_of_date` is
+   derived from `MAX(date)` in the price store, so firing early doesn't corrupt
+   anything — it just republishes yesterday and still records `status='ok'`.
+   Pass `--require-fresh` (CLI) or `?require_fresh=true` (HTTP) to turn that
+   into a loud 409 instead of a silent no-op.
+2. **Gate replication on `publish_run.status = 'ok'`** so a half-written or
+   failed publish never reaches us_db_dev. Reading through the `systematic.v_*`
+   views does this automatically — they join `v_latest_date`, which only
+   considers successful runs.
+3. **A compute failure must not block the price leg.** Prices are independent
+   and matter more; the fan-out for `prices_daily` should not depend on this
+   stage succeeding.
+
+### Invocation
+
+| | |
+|---|---|
+| `py -3.14 -m data.publish --require-fresh` | batch; needs this repo + its Python env on the host |
+| `POST /api/admin/publish?require_fresh=true` | needs only HTTP; re-warms the price store first |
+
+Roughly 2 minutes either way (~18s to re-pull and pivot `prices_daily`, the rest
+in the ~106 canonical backtests). Set a generous client timeout on the HTTP form.
+
+### Cache invalidation
+
+`data/lab.py` keys its result cache by normalized params **only** — there is no
+data-generation component — so a price refresh does not invalidate it. Any code
+path that re-pulls prices must call `lab.clear_caches()` or it will keep serving
+backtests computed on the previous pull. `_repull()` in `api/main.py` is the one
+place that does this; both admin endpoints go through it.
+
+### What is deliberately not published
+
+`market-data` (it *is* `prices_daily`, re-pivoted — republishing it would be
+circular) and the open-ended `lab` / `sizing` parameter space. Only
+`data.publish.canonical_runs()` is persisted; widen that list to publish more.
+
+---
+
 ## Known Limitations & Next Steps
 
 1. **COT data is synthetic.** `data/cot.py` generates seeded random walks.

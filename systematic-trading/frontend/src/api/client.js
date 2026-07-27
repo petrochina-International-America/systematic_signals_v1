@@ -83,8 +83,8 @@ export function fetchFadeTheCrowd(commodity, params = {}) {
 
 // ── Levels ─────────────────────────────────────────────────────────────────
 
-export function fetchLevelsProximity() {
-  return get('/levels/proximity');
+export function fetchLevelsProximity(tenor = 1) {
+  return get(`/levels/proximity?tenor=${tenor}`);
 }
 
 // ── Lab ─────────────────────────────────────────────────────────────────────

@@ -118,6 +118,23 @@ def _cache_put(cache: OrderedDict, max_size: int, key: str, value) -> None:
         cache.popitem(last=False)
 
 
+def clear_caches() -> int:
+    """
+    Drop every cached result and sweep. Returns how many entries were evicted.
+
+    MUST be called whenever data.loader re-pulls prices. Cache keys are the
+    normalized params alone (see run_lab) with no data-generation component, so
+    a refreshed price store does NOT invalidate them — without this, every
+    subsequent get_result() serves a backtest computed on the previous pull.
+    The signal/levels caches key off loader._loaded_at and self-invalidate; this
+    one cannot, because its keys are what the browser round-trips.
+    """
+    n = len(_RESULTS) + len(_SWEEPS)
+    _RESULTS.clear()
+    _SWEEPS.clear()
+    return n
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

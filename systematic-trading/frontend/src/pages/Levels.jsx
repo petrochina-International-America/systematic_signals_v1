@@ -86,6 +86,41 @@ function Tip({ text, up }) {
   );
 }
 
+/* ── Drill confirmation ── */
+
+// Cards are huge click targets and drilling in kicks off the backtest
+// computation, so an accidental click is expensive — catch it with a tiny
+// confirm first. Enter/click Yes proceeds; Esc/click-away cancels.
+function ConfirmDrill({ target, onYes, onNo }) {
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key === 'Escape') onNo();
+      if (e.key === 'Enter') onYes();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onYes, onNo]);
+
+  return createPortal(
+    <div className="confirm-overlay" onClick={onNo}>
+      <div className="confirm-box" onClick={e => e.stopPropagation()}>
+        <div className="confirm-box__text">
+          Examine <b>{target}</b> backtest?
+        </div>
+        <div className="confirm-box__actions">
+          <button type="button" className="confirm-box__btn confirm-box__btn--yes" onClick={onYes} autoFocus>
+            Yes
+          </button>
+          <button type="button" className="confirm-box__btn" onClick={onNo}>
+            No
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 /* ── Banners ── */
 
 function fmtDate(d) {
@@ -144,7 +179,8 @@ function signedColor(v) {
   return v > 0 ? COLORS.green : v < 0 ? COLORS.red : COLORS.muted;
 }
 
-function CommodityInfo({ cta, cot, priceInput, onPriceChange, onPriceApply }) {
+function CommodityInfo({ cta, cot, priceInput, onPriceChange, onPriceApply, tenorLabel, liveCta }) {
+  const liveColor = '#06b6d4';
   const dir = cta?.direction || 'Flat';
   const dirColor = DIR_COLORS[dir];
   const posPct = cta?.position_pct ?? 0;
@@ -178,7 +214,7 @@ function CommodityInfo({ cta, cot, priceInput, onPriceChange, onPriceApply }) {
   return (
     <div className="scanner-info">
       <div className="scanner-info__row" onClick={e => e.stopPropagation()}>
-        <span className="scanner-info__label">Live Price</span>
+        <span className="scanner-info__label">Live{tenorLabel ? ` ${tenorLabel}` : ' Price'}</span>
         <input
           type="text"
           value={priceInput}
@@ -187,11 +223,48 @@ function CommodityInfo({ cta, cot, priceInput, onPriceChange, onPriceApply }) {
           onKeyDown={e => { if (e.key === 'Enter') { onPriceApply(); e.target.blur(); } }}
           style={{
             width: 56, background: 'var(--surface-alt)', border: '1px solid var(--border)',
-            color: 'var(--text)', borderRadius: 4,
+            color: liveCta != null ? liveColor : 'var(--text)', borderRadius: 4,
             padding: '2px 6px', fontSize: 12, textAlign: 'right', outline: 'none',
           }}
         />
       </div>
+      {liveCta != null && (() => {
+        // Identical arithmetic to the Position readout: sized position over
+        // the (rounded) cap — so at the actual current price this shows the
+        // same number as Position.
+        const liveUtil = maxMag
+          ? Math.round((liveCta.posPct / maxMag) * 100)
+          : Math.round(liveCta.net * 100);
+        const liveMaxLabel = liveCta.posPct < 0 ? 'Max Short' : liveCta.posPct > 0 ? 'Max Long' : 'Max ±';
+        const liveMaxSigned = maxMag != null ? (liveCta.posPct < 0 ? -maxMag : maxMag) : null;
+        return <>
+          <div className="scanner-info__row">
+            <span className="scanner-info__label">
+              Live Pos
+              <Tip text="What-if at your entered price: strategies re-signed against today's levels, sized and divided by the same Max cap as Position — the two percentages compare directly. Sign shows direction." />
+            </span>
+            <span className="scanner-info__value" style={{ color: liveColor }}>
+              {liveUtil > 0 ? '+' : ''}{liveUtil}%
+            </span>
+          </div>
+          <div className="scanner-info__breakdown">
+            <div className="scanner-info__breakdown-row">
+              <span className="scanner-info__breakdown-label">Position</span>
+              <span className="scanner-info__breakdown-value" style={{ color: liveColor }}>
+                {liveCta.posPct > 0 ? '+' : ''}{liveCta.posPct}%
+              </span>
+            </div>
+            {liveMaxSigned != null && (
+              <div className="scanner-info__breakdown-row">
+                <span className="scanner-info__breakdown-label">{liveMaxLabel}</span>
+                <span className="scanner-info__breakdown-value" style={{ color: liveColor }}>
+                  {liveMaxSigned > 0 ? '+' : ''}{liveMaxSigned}%
+                </span>
+              </div>
+            )}
+          </div>
+        </>;
+      })()}
       <div className="scanner-info__row">
         <span className="scanner-info__label">
           Composite
@@ -510,7 +583,7 @@ function ExposureChart({ dates, history }) {
   );
 }
 
-function CommodityChart({ card, onClick }) {
+function CommodityChart({ card, tenor, tenorPending, onTenorChange, baseRank = 1, onClick }) {
   const { commodity, dates, prices, ma_levels, carry, cta, cot } = card;
   const isHot = (card.closest_dist ?? 999) < 2;
   const [hoveredLevel, setHoveredLevel] = useState(null);
@@ -528,6 +601,32 @@ function CommodityChart({ card, onClick }) {
     const val = parseFloat(priceInput);
     setPriceOverride(isNaN(val) ? null : val);
   }
+
+  // What-if position at the override price: re-sign each strategy against
+  // today's levels using the server's inverse-vol weights. Returns the sized
+  // position (net × vol scalar, like cta.position_pct) plus the raw net —
+  // CommodityInfo divides by the same Max Long the Position readout uses, so
+  // the two percentages are directly comparable.
+  const liveCta = useMemo(() => {
+    if (priceOverride == null || !cta?.weights) return null;
+    let net = 0;
+    let total = 0;
+    for (const l of ma_levels) {
+      const w = cta.weights[l.label];
+      if (w == null) continue;
+      net += w * (priceOverride > l.value ? 1 : -1);
+      total += w;
+    }
+    if (cta.weights.Carry != null && carry?.level?.value != null) {
+      net += cta.weights.Carry * (priceOverride > carry.level.value ? 1 : -1);
+      total += cta.weights.Carry;
+    }
+    if (!total) return null;
+    return {
+      net,
+      posPct: Math.round(net * (cta.vol_scalar ?? 1) * 1000) / 10,
+    };
+  }, [priceOverride, ma_levels, carry, cta]);
 
   const allLevels = useMemo(() => {
     const levels = ma_levels.map(l => ({
@@ -637,7 +736,34 @@ function CommodityChart({ card, onClick }) {
 
   return (
     <div className={`scanner-card${isHot ? ' scanner-card--hot' : ''}`} onClick={onClick}>
-      <div className="scanner-card__title">{commodity}</div>
+      <div className="scanner-card__title">
+        {commodity}
+        {card.tenor_label && (
+          <span
+            className="scanner-card__tenor"
+            title="Contract rank shown. Bal-month products (NGLs, Dubai) start at M2 — their front generic is balance-of-month."
+          >
+            {card.tenor_label}
+          </span>
+        )}
+        {onTenorChange && (
+          <div
+            className={`tenor-toggle tenor-toggle--card${tenorPending ? ' tenor-toggle--pending' : ''}`}
+            onClick={e => e.stopPropagation()}
+          >
+            {TENORS.map(n => (
+              <button
+                key={n}
+                type="button"
+                className={`tenor-toggle__btn${tenor === n ? ' tenor-toggle__btn--active' : ''}`}
+                onClick={() => onTenorChange(n)}
+              >
+                M{baseRank + n - 1}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="scanner-card__body">
         <div className="scanner-card__chart" ref={chartWrapRef}>
           <Plot data={traces} layout={layout} config={PLOTLY_CONFIG}
@@ -651,6 +777,8 @@ function CommodityChart({ card, onClick }) {
           priceInput={priceInput}
           onPriceChange={setPriceInput}
           onPriceApply={applyOverride}
+          tenorLabel={card.tenor_label}
+          liveCta={liveCta}
         />
       </div>
     </div>
@@ -816,9 +944,39 @@ function SpreadChart({ pair, data, onClick }) {
 
 /* ── Page ── */
 
+const TENORS = [1, 2, 3, 4];
+
 export default function Levels() {
   const { data, loading, error } = useApi(fetchLevelsProximity);
   const navigate = useNavigate();
+
+  // Per-card tenor selection. The API returns every commodity at one tenor,
+  // so tenor payloads are fetched lazily on first use (server caches them)
+  // and cached here as tenor → {commodity: card}.
+  const [cardTenors, setCardTenors] = useState({});
+  const [tenorCards, setTenorCards] = useState({});
+  const tenorFetching = useRef(new Set());
+
+  useEffect(() => {
+    if (data?.groups) {
+      const all = Object.values(data.groups).flat();
+      setTenorCards(prev => ({ ...prev, 1: Object.fromEntries(all.map(c => [c.commodity, c])) }));
+    }
+  }, [data]);
+
+  function selectTenor(commodity, t) {
+    setCardTenors(prev => ({ ...prev, [commodity]: t }));
+    if (!tenorCards[t] && !tenorFetching.current.has(t)) {
+      tenorFetching.current.add(t);
+      fetchLevelsProximity(t)
+        .then(d => {
+          const all = Object.values(d.groups || {}).flat();
+          setTenorCards(prev => ({ ...prev, [t]: Object.fromEntries(all.map(c => [c.commodity, c])) }));
+        })
+        .catch(() => {})
+        .finally(() => tenorFetching.current.delete(t));
+    }
+  }
 
   const outrights = useMemo(() => {
     if (!data?.groups) return [];
@@ -841,23 +999,28 @@ export default function Levels() {
   const hotSignals = bannerFilter(data?.hot);
   const recentTrades = bannerFilter(data?.recent_trades);
 
+  // All drills go through a confirm first — see ConfirmDrill.
+  const [confirmNav, setConfirmNav] = useState(null); // {label, path}
+
   function drillCommodity(name) {
-    navigate(`/signals/${encodeURIComponent(name)}/Momentum`);
+    setConfirmNav({ label: name, path: `/signals/${encodeURIComponent(name)}/Momentum` });
   }
   function drillSpread(pair) {
     const routePair = pair.replace(' − ', ' / ');
-    navigate(`/signals/${encodeURIComponent(routePair)}/Stat-Arb`);
+    setConfirmNav({ label: pair, path: `/signals/${encodeURIComponent(routePair)}/Stat-Arb` });
   }
   function drillBanner(commodity, strategy) {
     if (strategy === 'Mean Reversion') {
       const routePair = commodity.replace(' − ', ' / ');
-      navigate(`/signals/${encodeURIComponent(routePair)}/Stat-Arb`);
+      setConfirmNav({ label: commodity, path: `/signals/${encodeURIComponent(routePair)}/Stat-Arb` });
     } else {
-      navigate(`/signals/${encodeURIComponent(commodity)}/Momentum`);
+      setConfirmNav({ label: commodity, path: `/signals/${encodeURIComponent(commodity)}/Momentum` });
     }
   }
 
-  if (loading) return <div className="page-content"><Loading message="Computing proximity levels..." /></div>;
+  // Only show the full-page loader on first load; on a tenor switch keep the
+  // stale charts up until the new payload lands (useApi retains `data`).
+  if (loading && !data) return <div className="page-content"><Loading message="Computing proximity levels..." /></div>;
   if (error) return <div className="page-content"><ErrorNote message={error} /></div>;
 
   return (
@@ -871,9 +1034,28 @@ export default function Levels() {
         <div className="scanner-panel">
           <div className="level-section-label">Outrights</div>
           <div className="scanner-panel__scroll">
-            {outrights.map(c => (
-              <CommodityChart key={c.commodity} card={c} onClick={() => drillCommodity(c.commodity)} />
-            ))}
+            {outrights.map(c => {
+              const t = cardTenors[c.commodity] || 1;
+              // Fall back to the M1 card while a deeper tenor is in flight.
+              const card = tenorCards[t]?.[c.commodity] || c;
+              const pending = t !== 1 && !tenorCards[t];
+              // Starting rank from the base-tenor card (M2 for bal-month
+              // names like Dubai/NGLs) so the toggle reads M2…M5 for them.
+              const baseRank = parseInt(c.tenor_label?.slice(1), 10) || 1;
+              return (
+                // Key includes the shown tenor so the card remounts on a
+                // switch — priceInput/priceOverride state is per-tenor.
+                <CommodityChart
+                  key={`${c.commodity}-${card.tenor_label}`}
+                  card={card}
+                  tenor={t}
+                  tenorPending={pending}
+                  onTenorChange={n => selectTenor(c.commodity, n)}
+                  baseRank={baseRank}
+                  onClick={() => drillCommodity(c.commodity)}
+                />
+              );
+            })}
           </div>
         </div>
         {SHOW_SPREADS && (
@@ -887,6 +1069,18 @@ export default function Levels() {
           </div>
         )}
       </div>
+
+      {confirmNav && (
+        <ConfirmDrill
+          target={confirmNav.label}
+          onYes={() => {
+            const path = confirmNav.path;
+            setConfirmNav(null);
+            navigate(path);
+          }}
+          onNo={() => setConfirmNav(null)}
+        />
+      )}
     </div>
   );
 }

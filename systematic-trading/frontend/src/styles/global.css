@@ -459,6 +459,55 @@ input[type="range"] {
   padding-bottom: 4px; border-bottom: 2px solid var(--blue); flex-shrink: 0;
 }
 
+/* Tenor selector (per scanner card) */
+.tenor-toggle {
+  display: flex; align-items: center; gap: 2px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 2px;
+  transition: opacity 0.15s;
+}
+.tenor-toggle__btn {
+  border: none; background: transparent; color: var(--muted);
+  font-family: var(--font); font-size: 11px; font-weight: 700;
+  padding: 3px 10px; border-radius: 4px; cursor: pointer; transition: all 0.15s;
+}
+.tenor-toggle__btn:hover { color: var(--text); }
+.tenor-toggle__btn--active { background: var(--blue); color: #fff; }
+.tenor-toggle--card { margin-left: auto; padding: 1px; }
+.tenor-toggle--card .tenor-toggle__btn { padding: 2px 7px; font-size: 10px; }
+.tenor-toggle--pending { opacity: 0.5; }
+
+/* Backtest drill confirmation */
+.confirm-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(10, 12, 18, 0.55);
+  display: flex; align-items: center; justify-content: center;
+}
+.confirm-box {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  display: flex; flex-direction: column; gap: 12px; align-items: center;
+}
+.confirm-box__text { font-size: 13px; color: var(--text); }
+.confirm-box__text b { font-weight: 700; }
+.confirm-box__actions { display: flex; gap: 8px; }
+.confirm-box__btn {
+  border: 1px solid var(--border); background: var(--surface-alt);
+  color: var(--text); font-family: var(--font); font-size: 12px; font-weight: 600;
+  padding: 5px 18px; border-radius: 4px; cursor: pointer; transition: all 0.15s;
+}
+.confirm-box__btn:hover { border-color: var(--muted); }
+.confirm-box__btn--yes { background: var(--blue); border-color: var(--blue); color: #fff; }
+.confirm-box__btn--yes:hover { filter: brightness(1.15); border-color: var(--blue); }
+
+/* Per-card actual contract rank (differs from the selector on bal-month names) */
+.scanner-card__tenor {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  background: var(--surface-alt); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 6px;
+}
+
 /* Two-panel split layout */
 .scanner-split {
   display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start;
@@ -485,6 +534,7 @@ input[type="range"] {
 .scanner-card--hot:hover { border-color: var(--amber); }
 
 .scanner-card__title {
+  display: flex; align-items: center; gap: 8px;
   font-size: 15px; font-weight: 800; color: var(--text); padding: 10px 14px 0;
 }
 .scanner-card__body { display: flex; }

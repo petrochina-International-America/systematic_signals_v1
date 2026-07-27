@@ -75,14 +75,73 @@ def health():
     }
 
 
+def _repull() -> dict:
+    """
+    Re-pull prices and drop every stale downstream cache.
+
+    The signal/levels caches key off loader._loaded_at and self-invalidate once
+    warm_up() bumps it, but data.lab's result cache is keyed by params alone —
+    it survives a price refresh and would keep serving backtests computed on the
+    previous pull. Clear it explicitly.
+    """
+    import data.loader as loader
+    from data import lab
+
+    loader.warm_up()
+    evicted = lab.clear_caches()
+    return {
+        "commodities_loaded": loader.loaded_commodities(),
+        "latest_data_date": loader.latest_data_date(),
+        "lab_cache_evicted": evicted,
+    }
+
+
 @app.post("/api/admin/reload")
 def force_reload():
     """Force re-warm the data store and recompute all signal caches."""
-    import data.loader as loader
     from api.signals import precompute
-    loader.warm_up()
+    result = _repull()
     precompute()
-    return {
-        "status": "reloaded",
-        "commodities_loaded": loader.loaded_commodities(),
-    }
+    return {"status": "reloaded", **result}
+
+
+@app.post("/api/admin/publish")
+def force_publish(require_fresh: bool = False):
+    """
+    Refresh from FlowsDB, then publish the systematic.* snapshot.
+
+    The scheduling hook for the Bloomberg -> prices_daily -> compute ->
+    prices_daily -> {dashboard, us_db_dev} pipeline: call this once the upstream
+    price load commits, and gate the downstream replication on the returned
+    as_of_date (or on systematic.publish_run.status = 'ok').
+
+    Always re-warms first — a long-running API process holds prices for up to
+    _REFRESH_TTL (4h), so publishing off the in-memory store without a refresh
+    would write signals computed on the previous pull.
+
+    require_fresh=true refuses to publish when the price store has not advanced
+    past the last successful publish, turning a too-early trigger into a visible
+    failure instead of a silently stale snapshot.
+
+    Synchronous, ~2 minutes — set a generous client timeout. The publish itself
+    warms the signal/spread/levels caches as a side effect (it calls those same
+    producers), so only the top-performers bar is warmed separately afterwards.
+    """
+    from fastapi import HTTPException
+    from data.publish import publish
+
+    refreshed = _repull()
+    try:
+        summary = publish(require_fresh=require_fresh)
+    except RuntimeError as exc:
+        # Staleness guard and "no price data" both land here — 409 so the
+        # scheduler can distinguish "not ready yet" from a real 500.
+        raise HTTPException(409, str(exc))
+
+    # Warm the ranking bar last: it re-runs the canonical backtests, and with
+    # data.lab._MAX_RESULTS at 24 against ~106 canonical runs the LRU has
+    # already evicted them. Raise _MAX_RESULTS if this second pass matters.
+    from api.signals import _compute_top_performers
+    _compute_top_performers()
+
+    return {"status": "published", **refreshed, **summary}
