@@ -136,6 +136,8 @@ def _write(table, rows, conflict_cols, jsonb_cols=(), touch_col="updated_at",
     from data.db import upsert
     pre_delete = (("as_of_date = :as_of", {"as_of": replace_as_of})
                   if replace_as_of else None)
+    if replace_as_of == "*":            # latest-only tables: full replace
+        pre_delete = ("TRUE", {})
     return upsert(table, rows, conflict_cols, jsonb_cols, touch_col,
                   pre_delete=pre_delete)
 
@@ -232,17 +234,26 @@ def publish_signals(as_of: str, dry_run: bool = False) -> dict[str, int]:
 
 
 def publish_performance(as_of: str, dry_run: bool = False) -> dict[str, int]:
-    """strategy_run + strategy_performance — the top-performers bar.
+    """strategy_run + strategy_performance — the top-performers bar — plus
+    strategy_run_result, the full drill-down payloads.
 
     Runs the canonical set through data.lab and scores it with the API's own
     _sharpe_window, so the stored Sharpe is bit-identical to the rendered one.
     Ranks come from _best_momentum_per_commodity (only a commodity's best
     momentum tier ranks); non-ranking runs are stored with NULL rank.
+
+    Result payloads are serialized with the SAME functions the /api/lab
+    routes use (serialize_lab_result, df_to_records), so the stored JSON is
+    the route response verbatim. Serialization happens INSIDE the loop while
+    each result is at hand — data.lab's LRU (24) evicts long before the ~106
+    canonical runs finish, so collecting keys and fetching afterwards would
+    recompute nearly all of them.
     """
     from data import lab
     from api.signals import _sharpe_window, _best_momentum_per_commodity
+    from api.serialize import serialize_lab_result, df_to_records
 
-    run_rows, entries = [], []
+    run_rows, entries, result_rows = [], [], []
     for spec in canonical_runs():
         try:
             key = lab.run_lab(spec["params"])
@@ -250,6 +261,22 @@ def publish_performance(as_of: str, dry_run: bool = False) -> dict[str, int]:
             pos = float(result["position"].iloc[-1])
         except Exception:
             continue  # same tolerance as _compute_top_performers
+
+        try:
+            result_rows.append({
+                "run_key": key,
+                "as_of_date": as_of,
+                "strategy": spec["strategy"],
+                "instrument": spec["instrument"],
+                "label": spec["label"],
+                "result": json.dumps(serialize_lab_result(key, result)),
+                "diagnostics": json.dumps(
+                    {"data": df_to_records(lab.diagnostics(result))}),
+                "split_metrics": json.dumps(
+                    {"data": df_to_records(lab.split_metrics(result).round(3))}),
+            })
+        except Exception:
+            pass  # a payload failure must not drop the run from the rankings
 
         direction = "Long" if pos > 0 else ("Short" if pos < 0 else "Flat")
         run_rows.append({
@@ -307,19 +334,56 @@ def publish_performance(as_of: str, dry_run: bool = False) -> dict[str, int]:
     n_perf = _write("systematic.strategy_performance", perf_rows,
                     ["as_of_date", "run_key"], dry_run=dry_run,
                     replace_as_of=as_of)
-    return {"strategy_run": n_runs, "strategy_performance": n_perf}
+    # Latest-only ("*" = full replace): one row per canonical run; a canonical
+    # -set change must not leave orphaned payloads behind.
+    n_results = _write("systematic.strategy_run_result", result_rows,
+                       ["run_key"],
+                       jsonb_cols=("result", "diagnostics", "split_metrics"),
+                       dry_run=dry_run, replace_as_of="*")
+    return {"strategy_run": n_runs, "strategy_performance": n_perf,
+            "strategy_run_result": n_results}
 
 
 def publish_levels(as_of: str, dry_run: bool = False) -> dict[str, int]:
     """levels_card + levels_hot + levels_flip + chart_series, from
     /api/levels/proximity. Scalars go to columns; the 63-day display arrays go
-    to chart_series as JSONB."""
-    from api.levels import proximity
+    to chart_series as JSONB.
 
-    prox = proximity()
+    Runs once per selector tenor (1..4) so the DB path can serve the per-card
+    M1–M4 selector. Banners and the spread panel are pinned to the strategies'
+    trading tenor (the API only computes them on the tenor=1 pass), so those
+    tables are written from that pass alone; spread chart_series rows are
+    stored under tenor 1."""
+    from api.levels import proximity, _MAX_TENOR
+
     pgroup = _product_group_of()
-
     card_rows, series_rows = [], []
+    hot_rows, flip_rows = [], []
+
+    for tenor in range(1, _MAX_TENOR + 1):
+        prox = proximity(tenor)
+        _collect_levels_tenor(as_of, tenor, prox, pgroup,
+                              card_rows, series_rows, hot_rows, flip_rows)
+
+    return {
+        "levels_card": _write("systematic.levels_card", card_rows,
+                              ["as_of_date", "commodity", "tenor"], dry_run=dry_run,
+                              replace_as_of=as_of),
+        "levels_hot": _write("systematic.levels_hot", hot_rows,
+                             ["as_of_date", "instrument", "strategy"], dry_run=dry_run,
+                             replace_as_of=as_of),
+        "levels_flip": _write("systematic.levels_flip", flip_rows,
+                              ["as_of_date", "instrument", "flip_date", "strategy"],
+                              dry_run=dry_run, replace_as_of=as_of),
+        "chart_series": _write("systematic.chart_series", series_rows,
+                               ["as_of_date", "scope", "series_key", "tenor"],
+                               jsonb_cols=("payload",), dry_run=dry_run,
+                               replace_as_of=as_of),
+    }
+
+
+def _collect_levels_tenor(as_of, tenor, prox, pgroup,
+                          card_rows, series_rows, hot_rows, flip_rows):
     for group_name, cards in prox["groups"].items():
         for c in cards:
             carry = c.get("carry") or {}
@@ -331,6 +395,7 @@ def publish_levels(as_of: str, dry_run: bool = False) -> dict[str, int]:
             card_rows.append({
                 "as_of_date": as_of,
                 "commodity": commodity,
+                "tenor": tenor,
                 "product_group": pgroup.get(commodity, group_name),
                 "current_price": _num(c.get("current")),
                 "mom_direction": _str(_mom_direction(c)),
@@ -357,6 +422,7 @@ def publish_levels(as_of: str, dry_run: bool = False) -> dict[str, int]:
                 "as_of_date": as_of,
                 "scope": "levels_card",
                 "series_key": commodity,
+                "tenor": tenor,
                 "payload": json.dumps({
                     "dates": c.get("dates", []),
                     "prices": c.get("prices", []),
@@ -373,17 +439,20 @@ def publish_levels(as_of: str, dry_run: bool = False) -> dict[str, int]:
                 }),
             })
 
-    # Spread panel: entirely presentation-shaped (bands + histories), so it
-    # rides in chart_series. The queryable scalars are already in signal_spread.
+    # Spread panel + banners: the API only computes these on the tenor=1 pass
+    # (prox carries empties for deeper tenors), so they collect nothing there.
+    # Spread series ride in chart_series under tenor 1; the queryable scalars
+    # are already in signal_spread.
     for label, s in prox["spreads"].items():
         series_rows.append({
             "as_of_date": as_of,
             "scope": "levels_spread",
             "series_key": label,
+            "tenor": 1,
             "payload": json.dumps(s),
         })
 
-    hot_rows = [{
+    hot_rows.extend({
         "as_of_date": as_of,
         "instrument": h["commodity"],
         "strategy": h["strategy"],
@@ -392,9 +461,9 @@ def publish_levels(as_of: str, dry_run: bool = False) -> dict[str, int]:
         "detail": _str(h.get("detail")),
         "level": _num(h.get("level")),
         "current": _num(h.get("current")),
-    } for h in prox["hot"]]
+    } for h in prox["hot"])
 
-    flip_rows = [{
+    flip_rows.extend({
         "as_of_date": as_of,
         "instrument": t["commodity"],
         "flip_date": t["date"],
@@ -404,23 +473,7 @@ def publish_levels(as_of: str, dry_run: bool = False) -> dict[str, int]:
         "to_direction": _str(t.get("to")),
         "price": _num(t.get("price")),
         "level": _num(t.get("level")),
-    } for t in prox["recent_trades"] if t.get("date")]
-
-    return {
-        "levels_card": _write("systematic.levels_card", card_rows,
-                              ["as_of_date", "commodity"], dry_run=dry_run,
-                              replace_as_of=as_of),
-        "levels_hot": _write("systematic.levels_hot", hot_rows,
-                             ["as_of_date", "instrument", "strategy"], dry_run=dry_run,
-                             replace_as_of=as_of),
-        "levels_flip": _write("systematic.levels_flip", flip_rows,
-                              ["as_of_date", "instrument", "flip_date", "strategy"],
-                              dry_run=dry_run, replace_as_of=as_of),
-        "chart_series": _write("systematic.chart_series", series_rows,
-                               ["as_of_date", "scope", "series_key"],
-                               jsonb_cols=("payload",), dry_run=dry_run,
-                               replace_as_of=as_of),
-    }
+    } for t in prox["recent_trades"] if t.get("date"))
 
 
 def _mom_direction(card: dict) -> str | None:

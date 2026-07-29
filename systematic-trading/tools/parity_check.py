@@ -196,6 +196,44 @@ def _api_get(base, route):
     return r.json()
 
 
+def _lab_sample():
+    """Deterministic sample of stored canonical runs: up to 3 per strategy,
+    spread across each strategy's list. All 106 via HTTP would recompute
+    nearly everything (data.lab's LRU holds 24) for little extra proof."""
+    from data import readback
+    runs = readback.lab_runs()
+    by_strategy = {}
+    for r in runs:
+        by_strategy.setdefault(r["strategy"], []).append(r)
+    sample = []
+    for _strat, rs in sorted(by_strategy.items()):
+        step = max(1, len(rs) // 3)
+        sample.extend(rs[::step][:3])
+    return sample
+
+
+def _lab_api_side(base, sample):
+    from urllib.parse import quote
+    out = {}
+    for r in sample:
+        k = quote(r["run_key"], safe="")
+        out[r["label"]] = {
+            "result": _api_get(base, f"/api/lab/result/{k}"),
+            "diagnostics": _api_get(base, f"/api/lab/diagnostics/{k}"),
+            "split_metrics": _api_get(base, f"/api/lab/split-metrics/{k}"),
+        }
+    return out
+
+
+def _lab_db_side(sample):
+    from data import readback
+    return {r["label"]: {
+        "result": readback.lab_result(r["run_key"]),
+        "diagnostics": readback.lab_diagnostics(r["run_key"]),
+        "split_metrics": readback.lab_split_metrics(r["run_key"]),
+    } for r in sample}
+
+
 def fetch_pairs(base, n):
     from data import readback
     return {
@@ -211,11 +249,21 @@ def fetch_pairs(base, n):
             lambda: _api_get(base, "/api/signals/spreads"),
             lambda: readback.spread_snapshot(),
         ),
-        "levels": (
-            lambda: _api_get(base, "/api/levels/proximity?tenor=1"),
-            # Mirror the /api/db/levels/proximity wrapper — the frontend gets
-            # the endpoint's payload, and the wrapper is part of that path.
-            lambda: {**readback.proximity(), "tenor": 1},
+        # One component per selector tenor. The tenor>1 payloads carry empty
+        # banners/spreads on BOTH sides (only the trading tenor computes them),
+        # so each comparison stays like-for-like.
+        **{
+            f"levels_m{t}": (
+                lambda t=t: _api_get(base, f"/api/levels/proximity?tenor={t}"),
+                # Mirror the /api/db/levels/proximity wrapper — the frontend
+                # gets the endpoint's payload, wrapper included.
+                lambda t=t: {**readback.proximity(tenor=t), "tenor": t},
+            )
+            for t in (1, 2, 3, 4)
+        },
+        "lab_results": (
+            lambda: _lab_api_side(base, _lab_sample()),
+            lambda: _lab_db_side(_lab_sample()),
         ),
     }
 
@@ -274,7 +322,9 @@ def main(argv=None):
                     help="top-performers depth (frontend requests 15)")
     ap.add_argument("--components", nargs="*",
                     choices=["signals_snapshot", "top_performers",
-                             "signals_spreads", "levels"],
+                             "signals_spreads",
+                             "levels_m1", "levels_m2", "levels_m3", "levels_m4",
+                             "lab_results"],
                     help="default: all")
     ap.add_argument("--allow-date-mismatch", action="store_true",
                     help="run even when api/db snapshot dates differ (annotated)")

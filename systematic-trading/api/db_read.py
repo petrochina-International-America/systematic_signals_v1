@@ -59,18 +59,57 @@ def db_top_performers(n: int = 5):
 
 @router.get("/levels/proximity")
 def db_proximity(tenor: int = 1):
-    """Published Levels snapshot. Only tenor=1 is published (the levels_card /
-    chart_series grain is (as_of_date, commodity) — no tenor dimension), so a
-    deeper-tenor request is refused rather than silently served M1 data; the
-    frontend hides the M1–M4 selector when this source is active."""
+    """Published Levels snapshot for one selector tenor. tenors_available
+    reflects what this snapshot actually holds — snapshots published before
+    the tenor dimension only carry 1, and the frontend sizes (or hides) the
+    M1–M4 selector from it rather than 404ing on a stale link."""
     from data import readback
-    if int(tenor) != 1:
-        raise HTTPException(404, "only tenor=1 is published; deeper tenors "
-                                 "require the live API")
-    payload = _guard(readback.proximity())
-    payload["tenor"] = 1
-    payload["tenors_available"] = [1]
+    _guard(None)
+    available = readback.levels_tenors()
+    tenor = int(tenor)
+    if tenor not in available:
+        raise HTTPException(404, f"tenor {tenor} not in published snapshot "
+                                 f"(available: {available})")
+    payload = readback.proximity(tenor=tenor)
+    payload["tenor"] = tenor
+    payload["tenors_available"] = available
     return payload
+
+
+@router.get("/lab/runs")
+def db_lab_runs():
+    """Index of stored canonical-run results (run_key + label per run).
+    Only these keys resolve on the /api/db/lab/* routes — arbitrary lab
+    parameters are compute, not storage, and stay on the live /api/lab."""
+    from data import readback
+    return _guard(readback.lab_runs())
+
+
+def _lab_or_404(fn, key):
+    payload = fn(key)
+    if payload is None:
+        raise HTTPException(404, "not a stored canonical run — see "
+                                 "/api/db/lab/runs; arbitrary params need the "
+                                 "live /api/lab")
+    return payload
+
+
+@router.get("/lab/result/{key:path}")
+def db_lab_result(key: str):
+    from data import readback
+    return _lab_or_404(readback.lab_result, key)
+
+
+@router.get("/lab/diagnostics/{key:path}")
+def db_lab_diagnostics(key: str):
+    from data import readback
+    return _lab_or_404(readback.lab_diagnostics, key)
+
+
+@router.get("/lab/split-metrics/{key:path}")
+def db_lab_split_metrics(key: str):
+    from data import readback
+    return _lab_or_404(readback.lab_split_metrics, key)
 
 
 def _prev_weekday(d: date) -> date:

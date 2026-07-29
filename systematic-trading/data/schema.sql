@@ -150,6 +150,28 @@ CREATE INDEX IF NOT EXISTS ix_strategy_performance_rank
     ON systematic.strategy_performance (as_of_date DESC, rank_1y);
 
 
+-- ── Canonical run results (drill-down payloads) ──────────────────────────────
+-- The full backtest output for every canonical_runs() entry, serialized with
+-- the SAME functions the live /api/lab routes use, so a DB reader renders the
+-- drill-down pages byte-identically. LATEST-ONLY by design: one row per
+-- run_key, fully replaced each publish — a per-date history of ~106 MB-scale
+-- payloads would balloon, and the drill-downs only ever show the latest.
+-- The interactive Lab (arbitrary params, sweeps) is NOT here and never will
+-- be: results for user-chosen params don't exist until they are chosen.
+
+CREATE TABLE IF NOT EXISTS systematic.strategy_run_result (
+    run_key        TEXT        PRIMARY KEY,   -- lab cache key; joins strategy_run
+    as_of_date     DATE        NOT NULL,      -- snapshot the payloads were computed on
+    strategy       TEXT,
+    instrument     TEXT,
+    label          TEXT,
+    result         JSONB       NOT NULL,      -- GET /api/lab/result/<key>, verbatim
+    diagnostics    JSONB,                     -- GET /api/lab/diagnostics/<key>
+    split_metrics  JSONB,                     -- GET /api/lab/split-metrics/<key>
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+
 -- ── Levels tab: per-commodity card facts ─────────────────────────────────────
 -- Source: GET /api/levels/proximity -> groups[*][*], scalars only.
 -- The 3-month display arrays live in chart_series.
@@ -157,6 +179,7 @@ CREATE INDEX IF NOT EXISTS ix_strategy_performance_rank
 CREATE TABLE IF NOT EXISTS systematic.levels_card (
     as_of_date          DATE        NOT NULL,
     commodity           TEXT        NOT NULL,
+    tenor               INTEGER     NOT NULL DEFAULT 1,  -- selector rank 1..4 (M1..M4; bal-month names display M2..M5)
     product_group       TEXT,
     current_price       NUMERIC,
     mom_direction       TEXT,
@@ -178,7 +201,7 @@ CREATE TABLE IF NOT EXISTS systematic.levels_card (
     cot_pending         BOOLEAN,                -- TRUE while cot_bbg is synthetic
     closest_dist        NUMERIC,                -- card sort key
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (as_of_date, commodity)
+    PRIMARY KEY (as_of_date, commodity, tenor)
 );
 
 
@@ -226,16 +249,18 @@ CREATE TABLE IF NOT EXISTS systematic.levels_flip (
 -- downstream joins on them. Promote a field to a real column only once
 -- something needs to query it.
 --
---   scope 'levels_card'   series_key = commodity
---   scope 'levels_spread' series_key = pair label ("WTI − Brent")
+--   scope 'levels_card'   series_key = commodity   (tenor 1..4)
+--   scope 'levels_spread' series_key = pair label ("WTI − Brent"; spreads are
+--                         tenor-independent and always stored under tenor 1)
 
 CREATE TABLE IF NOT EXISTS systematic.chart_series (
     as_of_date  DATE        NOT NULL,
     scope       TEXT        NOT NULL,
     series_key  TEXT        NOT NULL,
+    tenor       INTEGER     NOT NULL DEFAULT 1,
     payload     JSONB       NOT NULL,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (as_of_date, scope, series_key)
+    PRIMARY KEY (as_of_date, scope, series_key, tenor)
 );
 
 

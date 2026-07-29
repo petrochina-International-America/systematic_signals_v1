@@ -135,11 +135,29 @@ CREATE INDEX IF NOT EXISTS ix_usan_perf_rank
     ON us_analysts.strategy_performance (as_of_date DESC, rank_1y);
 
 
+-- ── Canonical run results (drill-down payloads) ───────────────────────────────
+-- Latest-only: one row per run_key, fully replaced by each source publish.
+-- Replication must mirror deletes (or truncate-and-copy) — see source notes.
+
+CREATE TABLE IF NOT EXISTS us_analysts.strategy_run_result (
+    run_key        TEXT        PRIMARY KEY,
+    as_of_date     DATE        NOT NULL,
+    strategy       TEXT,
+    instrument     TEXT,
+    label          TEXT,
+    result         JSONB,
+    diagnostics    JSONB,
+    split_metrics  JSONB,
+    updated_at     TIMESTAMPTZ
+);
+
+
 -- ── Levels tab: per-commodity card facts ──────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS us_analysts.levels_card (
     as_of_date          DATE        NOT NULL,
     commodity           TEXT        NOT NULL,
+    tenor               INTEGER     NOT NULL DEFAULT 1,  -- selector rank 1..4
     product_group       TEXT,
     current_price       NUMERIC,
     mom_direction       TEXT,
@@ -161,7 +179,7 @@ CREATE TABLE IF NOT EXISTS us_analysts.levels_card (
     cot_pending         BOOLEAN,                -- TRUE while cot_bbg is synthetic
     closest_dist        NUMERIC,
     updated_at          TIMESTAMPTZ,
-    PRIMARY KEY (as_of_date, commodity)
+    PRIMARY KEY (as_of_date, commodity, tenor)
 );
 
 
@@ -208,9 +226,10 @@ CREATE TABLE IF NOT EXISTS us_analysts.chart_series (
     as_of_date  DATE        NOT NULL,
     scope       TEXT        NOT NULL,
     series_key  TEXT        NOT NULL,
+    tenor       INTEGER     NOT NULL DEFAULT 1,   -- levels_spread rows always 1
     payload     JSONB,
     updated_at  TIMESTAMPTZ,
-    PRIMARY KEY (as_of_date, scope, series_key)
+    PRIMARY KEY (as_of_date, scope, series_key, tenor)
 );
 
 

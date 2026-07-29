@@ -19,12 +19,11 @@ export const DATA_SOURCES = {
   signalsSnapshot: 'db',
   signalsSpreads: 'db',
   topPerformers: 'db',
-  // STOP-THE-MIGRATION finding (parity clean at tenor=1, but the schema has
-  // no tenor dimension): only M1 is published, and the Levels page serves an
-  // M1–M4 selector per card. Flipping would silently drop M2–M4. Needs
-  // `tenor` added to levels_card/chart_series PKs (both schemas) + a 4-tenor
-  // publish before this can move to 'db'.
-  levels: 'api',
+  // Flipped after the tenor dimension landed (levels_card/chart_series PKs
+  // now carry tenor; publish writes M1–M4) and levels_m1..m4 all passed
+  // parity at run 16. The page sizes its selector from tenors_available, so
+  // a pre-tenor snapshot degrades to M1-only instead of 404ing.
+  levels: 'db',
 };
 
 export const anyDbSource = () =>

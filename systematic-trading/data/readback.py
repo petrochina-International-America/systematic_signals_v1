@@ -188,28 +188,46 @@ def top_performers(n: int = 5, as_of: str | None = None) -> dict:
 # ── /api/levels/proximity ─────────────────────────────────────────────────────
 
 
-def proximity(as_of: str | None = None) -> dict:
+def levels_tenors(as_of: str | None = None) -> list[int]:
+    """Selector tenors actually present in the published snapshot (older
+    snapshots predate the tenor dimension and only hold 1)."""
+    from data.db import query_df
+    as_of = _resolve(as_of)
+    df = query_df(
+        f"SELECT DISTINCT tenor FROM {_SCHEMA}.levels_card "
+        "WHERE as_of_date = :d ORDER BY tenor", {"d": as_of},
+    )
+    return [int(t) for t in df["tenor"]]
+
+
+def proximity(as_of: str | None = None, tenor: int = 1) -> dict:
+    """Levels payload for one selector tenor. Banners and the spread panel are
+    pinned to the strategies' trading tenor — the live API returns them empty
+    for tenor > 1, so this does too (they're stored under tenor 1)."""
     from data.db import query_df
     from data.signals import PRODUCT_GROUPS
 
     as_of = _resolve(as_of)
+    is_base = int(tenor) == 1
 
     cards_df = query_df(
         f"SELECT * FROM {_SCHEMA}.levels_card WHERE as_of_date = :d "
-        "ORDER BY closest_dist NULLS LAST",
-        {"d": as_of},
+        "AND tenor = :t ORDER BY closest_dist NULLS LAST",
+        {"d": as_of, "t": tenor},
     )
     series_df = query_df(
         f"SELECT scope, series_key, payload FROM {_SCHEMA}.chart_series "
-        "WHERE as_of_date = :d", {"d": as_of},
+        "WHERE as_of_date = :d AND (scope = 'levels_card' AND tenor = :t "
+        "OR scope = 'levels_spread' AND :base)",
+        {"d": as_of, "t": tenor, "base": is_base},
     )
     hot_df = query_df(
-        f"SELECT * FROM {_SCHEMA}.levels_hot WHERE as_of_date = :d "
-        "ORDER BY distance NULLS LAST", {"d": as_of},
+        f"SELECT * FROM {_SCHEMA}.levels_hot WHERE as_of_date = :d AND :base "
+        "ORDER BY distance NULLS LAST", {"d": as_of, "base": is_base},
     )
     flip_df = query_df(
-        f"SELECT * FROM {_SCHEMA}.levels_flip WHERE as_of_date = :d "
-        "ORDER BY flip_date DESC", {"d": as_of},
+        f"SELECT * FROM {_SCHEMA}.levels_flip WHERE as_of_date = :d AND :base "
+        "ORDER BY flip_date DESC", {"d": as_of, "base": is_base},
     )
 
     card_series, spread_series = {}, {}
@@ -275,6 +293,48 @@ def proximity(as_of: str | None = None) -> dict:
         "recent_trades": recent_trades,
         "as_of_date": as_of,
     }
+
+
+# ── /api/lab (canonical runs only) ────────────────────────────────────────────
+# strategy_run_result is latest-only (keyed by run_key, no as_of join): the
+# drill-downs always show the newest publish. Its as_of_date column says which
+# snapshot the payloads came from — surface it, don't assume it matches
+# v_latest_date (a publish that failed after the performance stage can leave
+# it one step ahead).
+
+
+def lab_runs() -> list[dict]:
+    """Index of stored canonical results (what a DB reader can drill into)."""
+    from data.db import query_df
+    df = query_df(
+        f"SELECT run_key, as_of_date, strategy, instrument, label "
+        f"FROM {_SCHEMA}.strategy_run_result ORDER BY strategy, instrument, label"
+    )
+    return [{**r, "as_of_date": str(r["as_of_date"])} for r in _records(df)]
+
+
+def _lab_payload(run_key: str, column: str):
+    from data.db import query_df
+    df = query_df(
+        f"SELECT {column} FROM {_SCHEMA}.strategy_run_result "
+        "WHERE run_key = :k", {"k": run_key},
+    )
+    if df.empty or df[column].iloc[0] is None:
+        return None
+    return _payload(df[column].iloc[0])
+
+
+def lab_result(run_key: str):
+    """GET /api/lab/result/<key> payload, verbatim. None if not canonical."""
+    return _lab_payload(run_key, "result")
+
+
+def lab_diagnostics(run_key: str):
+    return _lab_payload(run_key, "diagnostics")
+
+
+def lab_split_metrics(run_key: str):
+    return _lab_payload(run_key, "split_metrics")
 
 
 # ── /api/sizing/today ─────────────────────────────────────────────────────────
