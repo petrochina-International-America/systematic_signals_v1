@@ -79,7 +79,8 @@ def upsert(table: str,
            rows: list[dict],
            conflict_cols: list[str],
            jsonb_cols: tuple[str, ...] = (),
-           touch_col: str | None = "updated_at") -> int:
+           touch_col: str | None = "updated_at",
+           pre_delete: tuple[str, dict] | None = None) -> int:
     """
     Batch INSERT ... ON CONFLICT DO UPDATE. Returns the number of rows sent.
 
@@ -92,6 +93,11 @@ def upsert(table: str,
 
     `touch_col` is stamped with now() on update (pass None for tables without
     an updated_at column).
+
+    `pre_delete` is a (where_clause, params) pair executed against `table` in
+    the SAME transaction before the insert. Snapshot tables need it: an upsert
+    alone never removes rows whose natural key changed or left the universe,
+    so a republish would leave stale rows interleaved with fresh ones.
     """
     if not rows:
         return 0
@@ -112,5 +118,8 @@ def upsert(table: str,
     )
 
     with get_write_engine().begin() as conn:
+        if pre_delete is not None:
+            where, del_params = pre_delete
+            conn.execute(text(f"DELETE FROM {table} WHERE {where}"), del_params)
         conn.execute(text(sql), rows)
     return len(rows)

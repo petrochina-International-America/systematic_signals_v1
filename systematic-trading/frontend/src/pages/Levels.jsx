@@ -978,6 +978,11 @@ export default function Levels() {
     }
   }
 
+  // The published-snapshot source only serves tenor 1 (it advertises
+  // tenors_available: [1]); the live API serves all of TENORS and sends no
+  // such field. With a single tenor the M1–M4 toggle is not rendered.
+  const multiTenor = (data?.tenors_available ?? TENORS).length > 1;
+
   const outrights = useMemo(() => {
     if (!data?.groups) return [];
     const all = Object.values(data.groups).flat();
@@ -1050,7 +1055,7 @@ export default function Levels() {
                   card={card}
                   tenor={t}
                   tenorPending={pending}
-                  onTenorChange={n => selectTenor(c.commodity, n)}
+                  onTenorChange={multiTenor ? (n => selectTenor(c.commodity, n)) : undefined}
                   baseRank={baseRank}
                   onClick={() => drillCommodity(c.commodity)}
                 />

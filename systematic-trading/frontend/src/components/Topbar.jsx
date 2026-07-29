@@ -1,4 +1,5 @@
 import { useCommodity } from '../hooks/useCommodity';
+import FreshnessBadge from './FreshnessBadge';
 
 const PAGE_TITLES = {
   '/': 'Signals',
@@ -27,6 +28,7 @@ export default function Topbar({ pathname }) {
         <h1 className="topbar-title">{title}</h1>
       </div>
       <div className="topbar-right">
+        <FreshnessBadge />
         <span className="topbar-timestamp">{label}</span>
       </div>
     </div>

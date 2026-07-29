@@ -16,9 +16,23 @@ Everything defaults to the latest successfully published date
 
 import json
 import math
+import os
 from typing import Any
 
 import pandas as pd
+
+# Which schema to read. The us_analysts landing schema mirrors systematic.*
+# name-for-name (see data/us_analysts_schema.sql), so pointing this at
+# 'us_analysts' makes every function here read the replicated copy instead.
+_SCHEMA = os.getenv("READBACK_SCHEMA", "systematic")
+
+
+def set_schema(schema: str) -> None:
+    """Override the source schema ('systematic' | 'us_analysts')."""
+    global _SCHEMA
+    if schema not in ("systematic", "us_analysts"):
+        raise ValueError(f"unknown readback schema: {schema!r}")
+    _SCHEMA = schema
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -60,7 +74,7 @@ def _whole(v: Any) -> Any:
 def latest_date() -> str | None:
     """Most recent as_of_date with a successful publish_run."""
     from data.db import query_df
-    df = query_df("SELECT as_of_date FROM systematic.v_latest_date")
+    df = query_df(f"SELECT as_of_date FROM {_SCHEMA}.v_latest_date")
     if df.empty or df["as_of_date"].iloc[0] is None:
         return None
     return str(df["as_of_date"].iloc[0])
@@ -79,7 +93,7 @@ def signal_snapshot(as_of: str | None = None) -> dict:
 
     as_of = _resolve(as_of)
     df = query_df(
-        "SELECT commodity, strategy, detail FROM systematic.signal_outright "
+        f"SELECT commodity, strategy, detail FROM {_SCHEMA}.signal_outright "
         "WHERE as_of_date = :d", {"d": as_of},
     )
 
@@ -120,7 +134,7 @@ def spread_snapshot(as_of: str | None = None) -> dict:
 
     as_of = _resolve(as_of)
     df = query_df(
-        "SELECT * FROM systematic.signal_spread WHERE as_of_date = :d",
+        f"SELECT * FROM {_SCHEMA}.signal_spread WHERE as_of_date = :d",
         {"d": as_of},
     )
     by_pair = {r["pair"]: r for r in _records(df)}
@@ -152,14 +166,18 @@ def top_performers(n: int = 5, as_of: str | None = None) -> dict:
     def _bar(rank_col: str, sharpe_col: str) -> list[dict]:
         df = query_df(
             f"SELECT label, strategy, instrument, direction, {sharpe_col} "
-            f"FROM systematic.strategy_performance "
+            f"FROM {_SCHEMA}.strategy_performance "
             f"WHERE as_of_date = :d AND {rank_col} IS NOT NULL "
             f"ORDER BY {rank_col} LIMIT :n",
             {"d": as_of, "n": n},
         )
+        # Stored full-precision; the live bar rounds for display before
+        # serving, so round here too — same JSON contract, either source.
         return [{"commodity": r["instrument"], "strategy": r["strategy"],
                  "label": r["label"], "direction": r["direction"],
-                 sharpe_col: r[sharpe_col]} for r in _records(df)]
+                 sharpe_col: (round(r[sharpe_col], 2)
+                              if r[sharpe_col] is not None else None)}
+                for r in _records(df)]
 
     return {
         "top_1y": _bar("rank_1y", "sharpe_1y"),
@@ -177,20 +195,20 @@ def proximity(as_of: str | None = None) -> dict:
     as_of = _resolve(as_of)
 
     cards_df = query_df(
-        "SELECT * FROM systematic.levels_card WHERE as_of_date = :d "
+        f"SELECT * FROM {_SCHEMA}.levels_card WHERE as_of_date = :d "
         "ORDER BY closest_dist NULLS LAST",
         {"d": as_of},
     )
     series_df = query_df(
-        "SELECT scope, series_key, payload FROM systematic.chart_series "
+        f"SELECT scope, series_key, payload FROM {_SCHEMA}.chart_series "
         "WHERE as_of_date = :d", {"d": as_of},
     )
     hot_df = query_df(
-        "SELECT * FROM systematic.levels_hot WHERE as_of_date = :d "
+        f"SELECT * FROM {_SCHEMA}.levels_hot WHERE as_of_date = :d "
         "ORDER BY distance NULLS LAST", {"d": as_of},
     )
     flip_df = query_df(
-        "SELECT * FROM systematic.levels_flip WHERE as_of_date = :d "
+        f"SELECT * FROM {_SCHEMA}.levels_flip WHERE as_of_date = :d "
         "ORDER BY flip_date DESC", {"d": as_of},
     )
 
@@ -204,6 +222,8 @@ def proximity(as_of: str | None = None) -> dict:
         s = card_series.get(r["commodity"], {})
         card = {
             "commodity": r["commodity"],
+            "tenor_label": s.get("tenor_label"),
+            "tenor_col": s.get("tenor_col"),
             "dates": s.get("dates", []),
             "prices": s.get("prices", []),
             "current": r["current_price"],
@@ -225,6 +245,7 @@ def proximity(as_of: str | None = None) -> dict:
             "cta": {
                 "direction": r["cta_direction"],
                 "net_signal": r["cta_net_signal"],
+                "weights": s.get("weights"),
                 "position_pct": r["position_pct"],
                 "position_pct_prev": r["position_pct_prev"],
                 "position_chg": r["position_chg"],
@@ -275,7 +296,7 @@ def sizing(strategy: str | None = None, instrument: str | None = None,
         params["i"] = instrument
 
     df = query_df(
-        "SELECT strategy, instrument, is_pair, payload FROM systematic.sizing_daily "
+        f"SELECT strategy, instrument, is_pair, payload FROM {_SCHEMA}.sizing_daily "
         f"WHERE {' AND '.join(clauses)} ORDER BY strategy, instrument", params,
     )
     return [{"strategy": r["strategy"], "instrument": r["instrument"],

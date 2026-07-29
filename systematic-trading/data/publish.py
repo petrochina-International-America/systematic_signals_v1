@@ -124,11 +124,20 @@ def canonical_runs() -> list[dict]:
 
 
 def _write(table, rows, conflict_cols, jsonb_cols=(), touch_col="updated_at",
-           dry_run=False) -> int:
+           dry_run=False, replace_as_of: str | None = None) -> int:
+    """`replace_as_of`: snapshot tables pass the publish date so rows for that
+    date are deleted (same transaction) before the insert — a publish REPLACES
+    the date's snapshot. Upsert alone leaves stale rows behind whenever a
+    natural key changes (e.g. a run_key after a param-normalization change) or
+    an instrument drops out of the universe, and those orphans then interleave
+    with fresh rows on readback (duplicate labels, clashing ranks)."""
     if dry_run or not rows:
         return len(rows)
     from data.db import upsert
-    return upsert(table, rows, conflict_cols, jsonb_cols, touch_col)
+    pre_delete = (("as_of_date = :as_of", {"as_of": replace_as_of})
+                  if replace_as_of else None)
+    return upsert(table, rows, conflict_cols, jsonb_cols, touch_col,
+                  pre_delete=pre_delete)
 
 
 def publish_signals(as_of: str, dry_run: bool = False) -> dict[str, int]:
@@ -214,9 +223,11 @@ def publish_signals(as_of: str, dry_run: bool = False) -> dict[str, int]:
     return {
         "signal_outright": _write("systematic.signal_outright", outright_rows,
                                   ["as_of_date", "commodity", "strategy"],
-                                  jsonb_cols=("detail",), dry_run=dry_run),
+                                  jsonb_cols=("detail",), dry_run=dry_run,
+                                  replace_as_of=as_of),
         "signal_spread": _write("systematic.signal_spread", list(spread_rows.values()),
-                                ["as_of_date", "pair"], dry_run=dry_run),
+                                ["as_of_date", "pair"], dry_run=dry_run,
+                                replace_as_of=as_of),
     }
 
 
@@ -267,7 +278,12 @@ def publish_performance(as_of: str, dry_run: bool = False) -> dict[str, int]:
 
     def _ranked(field: str) -> dict[str, int]:
         scored = [e for e in entries if e[field] is not None]
-        scored.sort(key=lambda e: e[field], reverse=True)
+        # Rank on the 2dp-rounded Sharpe, exactly like the API bar: it rounds
+        # for display BEFORE sorting, and Python's stable sort then breaks
+        # 2dp ties by insertion order (which canonical_runs shares with
+        # _compute_top_performers). Ranking on full precision here would
+        # order those ties differently and the DB top-N would diverge.
+        scored.sort(key=lambda e: round(e[field], 2), reverse=True)
         kept = _best_momentum_per_commodity(scored)
         return {e["run_key"]: i + 1 for i, e in enumerate(kept)}
 
@@ -289,7 +305,8 @@ def publish_performance(as_of: str, dry_run: bool = False) -> dict[str, int]:
     n_runs = _write("systematic.strategy_run", run_rows, ["run_key"],
                     jsonb_cols=("params",), touch_col=None, dry_run=dry_run)
     n_perf = _write("systematic.strategy_performance", perf_rows,
-                    ["as_of_date", "run_key"], dry_run=dry_run)
+                    ["as_of_date", "run_key"], dry_run=dry_run,
+                    replace_as_of=as_of)
     return {"strategy_run": n_runs, "strategy_performance": n_perf}
 
 
@@ -347,6 +364,12 @@ def publish_levels(as_of: str, dry_run: bool = False) -> dict[str, int]:
                     "carry_history": level.get("history"),
                     "position_history": cta.get("position_history", []),
                     "position_util_history": cta.get("position_util_history", []),
+                    # Presentation metadata the DB path needs to render the
+                    # card like the live API: contract-rank chip, and the
+                    # inverse-vol weights the what-if price recompute uses.
+                    "tenor_label": c.get("tenor_label"),
+                    "tenor_col": c.get("tenor_col"),
+                    "weights": cta.get("weights"),
                 }),
             })
 
@@ -385,15 +408,18 @@ def publish_levels(as_of: str, dry_run: bool = False) -> dict[str, int]:
 
     return {
         "levels_card": _write("systematic.levels_card", card_rows,
-                              ["as_of_date", "commodity"], dry_run=dry_run),
+                              ["as_of_date", "commodity"], dry_run=dry_run,
+                              replace_as_of=as_of),
         "levels_hot": _write("systematic.levels_hot", hot_rows,
-                             ["as_of_date", "instrument", "strategy"], dry_run=dry_run),
+                             ["as_of_date", "instrument", "strategy"], dry_run=dry_run,
+                             replace_as_of=as_of),
         "levels_flip": _write("systematic.levels_flip", flip_rows,
                               ["as_of_date", "instrument", "flip_date", "strategy"],
-                              dry_run=dry_run),
+                              dry_run=dry_run, replace_as_of=as_of),
         "chart_series": _write("systematic.chart_series", series_rows,
                                ["as_of_date", "scope", "series_key"],
-                               jsonb_cols=("payload",), dry_run=dry_run),
+                               jsonb_cols=("payload",), dry_run=dry_run,
+                               replace_as_of=as_of),
     }
 
 
@@ -469,7 +495,8 @@ def publish_sizing(as_of: str, dry_run: bool = False) -> dict[str, int]:
 
     return {"sizing_daily": _write("systematic.sizing_daily", rows,
                                    ["as_of_date", "run_key"],
-                                   jsonb_cols=("payload",), dry_run=dry_run)}
+                                   jsonb_cols=("payload",), dry_run=dry_run,
+                                   replace_as_of=as_of)}
 
 
 # ── orchestration ─────────────────────────────────────────────────────────────

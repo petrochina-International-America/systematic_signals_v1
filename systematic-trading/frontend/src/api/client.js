@@ -1,4 +1,9 @@
+import { DATA_SOURCES } from '../config/dataSources';
+
 const BASE = '/api';
+
+// Prefix for components flipped to the published-snapshot source.
+const src = component => (DATA_SOURCES[component] === 'db' ? '/db' : '');
 
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
@@ -43,16 +48,22 @@ export function fetchFrontMonth(commodity, params = {}) {
 // ── Signals ─────────────────────────────────────────────────────────────────
 
 export function fetchSignalSnapshot() {
-  return get('/signals/snapshot');
+  return get(`${src('signalsSnapshot')}/signals/snapshot`);
 }
 
 export function fetchSpreadSnapshot(params = {}) {
   const qs = new URLSearchParams(params).toString();
-  return get(`/signals/spreads${qs ? '?' + qs : ''}`);
+  return get(`${src('signalsSpreads')}/signals/spreads${qs ? '?' + qs : ''}`);
 }
 
 export function fetchTopPerformers(n = 5) {
-  return get(`/signals/top-performers?n=${n}`);
+  return get(`${src('topPerformers')}/signals/top-performers?n=${n}`);
+}
+
+// ── Published-snapshot freshness (the permanent post-migration guard) ───────
+
+export function fetchDbMeta() {
+  return get('/db/meta');
 }
 
 // ── COT ─────────────────────────────────────────────────────────────────────
@@ -84,7 +95,7 @@ export function fetchFadeTheCrowd(commodity, params = {}) {
 // ── Levels ─────────────────────────────────────────────────────────────────
 
 export function fetchLevelsProximity(tenor = 1) {
-  return get(`/levels/proximity?tenor=${tenor}`);
+  return get(`${src('levels')}/levels/proximity?tenor=${tenor}`);
 }
 
 // ── Lab ─────────────────────────────────────────────────────────────────────

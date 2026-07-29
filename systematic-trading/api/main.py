@@ -54,6 +54,7 @@ from api.cot import router as cot_router
 from api.lab import router as lab_router
 from api.levels import router as levels_router
 from api.sizing import router as sizing_router
+from api.db_read import router as db_read_router
 
 app.include_router(market_data_router, prefix="/api/market-data", tags=["Market Data"])
 app.include_router(signals_router, prefix="/api/signals", tags=["Signals"])
@@ -61,6 +62,7 @@ app.include_router(cot_router, prefix="/api/cot", tags=["COT"])
 app.include_router(lab_router, prefix="/api/lab", tags=["Strategy Lab"])
 app.include_router(levels_router, prefix="/api/levels", tags=["Levels"])
 app.include_router(sizing_router, prefix="/api/sizing", tags=["Sizing"])
+app.include_router(db_read_router, prefix="/api/db", tags=["DB Snapshot"])
 
 
 @app.get("/api/health")
